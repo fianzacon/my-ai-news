@@ -61,24 +61,34 @@ class CloudStorageArchive:
             date_prefix = datetime.now().strftime('%Y/%m/%d')
             
             # Save analyzed articles (JSON)
-            articles_data = [
-                {
-                    'title': a.title,
-                    'url': a.url,
-                    'published_date': a.published_date.isoformat() if a.published_date else None,
-                    'source': a.source,
-                    'industry_relevance': a.industry_relevance,
-                    'value_score': a.value_score,
-                    'impact_areas': a.impact_areas,
-                    'use_case_summary': a.use_case_summary,
-                    'competitive_advantage': a.competitive_advantage,
-                    'implementation_difficulty': a.implementation_difficulty,
-                    'potential_partners': a.potential_partners,
-                    'lotte_context': a.lotte_context,
-                    'content': a.content[:500] + '...' if len(a.content) > 500 else a.content  # Truncate long content
+            articles_data = []
+            for a in articles:
+                # LotteContextAnalysis 객체 내부에 원본 기사 객체(article)가 있다고 가정
+                # 만약 속성명이 'article'이 아니라면 'original_article' 등으로 변경 필요
+                source_article = getattr(a, 'article', None) or getattr(a, 'original_article', None)
+                
+                # 안전 장치: 원본 기사 객체를 못 찾으면 분석 객체 자체(a)를 사용 시도
+                target_obj = source_article if source_article else a
+                
+                article_dict = {
+                    # 원본 기사 정보 (nested object에서 추출)
+                    'title': getattr(target_obj, 'title', 'No Title'),
+                    'url': getattr(target_obj, 'url', ''),
+                    'published_date': target_obj.published_date.isoformat() if hasattr(target_obj, 'published_date') and target_obj.published_date else None,
+                    'source': getattr(target_obj, 'source', 'Unknown'),
+                    'content': getattr(target_obj, 'content', '')[:500] + '...' if getattr(target_obj, 'content', '') and len(getattr(target_obj, 'content', '')) > 500 else getattr(target_obj, 'content', ''),
+                    
+                    # AI 분석 결과 정보 (LotteContextAnalysis 객체에서 추출)
+                    'industry_relevance': getattr(a, 'industry_relevance', None),
+                    'value_score': getattr(a, 'value_score', 0),
+                    'impact_areas': getattr(a, 'impact_areas', []),
+                    'use_case_summary': getattr(a, 'use_case_summary', ''),
+                    'competitive_advantage': getattr(a, 'competitive_advantage', ''),
+                    'implementation_difficulty': getattr(a, 'implementation_difficulty', ''),
+                    'potential_partners': getattr(a, 'potential_partners', []),
+                    'lotte_context': getattr(a, 'lotte_context', '')
                 }
-                for a in articles
-            ]
+                articles_data.append(article_dict)
             
             articles_blob = self.bucket.blob(f"articles/{date_prefix}/articles_{timestamp}.json")
             articles_blob.upload_from_string(
