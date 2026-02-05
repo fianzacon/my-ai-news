@@ -49,15 +49,19 @@ jobs:
         run: |
           gcloud run jobs update ${{ env.SERVICE_NAME }} \
             --image gcr.io/${{ env.PROJECT_ID }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
-            --region ${{ env.REGION }} \
-            --args="--stage,collect"
+            --region ${{ env.REGION }}
 
       - name: Verify deployment
         run: |
           echo "Deployed image: gcr.io/${{ env.PROJECT_ID }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
-          gcloud run jobs describe ${{ env.SERVICE_NAME }} \
+          DEPLOYED_IMAGE=$(gcloud run jobs describe ${{ env.SERVICE_NAME }} \
             --region ${{ env.REGION }} \
-            --format="value(spec.template.spec.containers[0].image)"
+            --format="value(spec.template.spec.containers[0].image)")
+          echo "Current image in Cloud Run Job: $DEPLOYED_IMAGE"
+          if [[ "$DEPLOYED_IMAGE" != *"${{ github.sha }}"* ]]; then
+            echo "ERROR: Deployment failed - image not updated!"
+            exit 1
+          fi
 
       - name: Update scheduler jobs (if needed)
         run: |

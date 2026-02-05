@@ -1,142 +1,253 @@
-# Cloud Scheduler 설정 스크립트 (Windows PowerShell)
+"""
+Scheduled execution script for AI news pipeline with TWO-STAGE EXECUTION:
 
-param(
-    [Parameter(Mandatory=$true)]
-    [string]$ProjectId,
-    
-    [string]$Region = "asia-northeast3",
-    [string]$ServiceName = "ai-news-pipeline",
-    [string]$CollectJobName = "ai-news-collect-midnight",
-    [string]$SendJobName = "ai-news-send-9am",
-    [string]$CollectSchedule = "0 0 * * *",
-    [string]$SendSchedule = "0 9 * * *",
-    [string]$TimeZone = "Asia/Seoul"
+TWO-STAGE EXECUTION:
+1. Stage 1 (00:00 midnight): Collect yesterday's articles and save to GCS
+   - At midnight, "today" articles = 0, so yesterday articles appear on page 1
+   - This bypasses Naver API's 1000-result limit
+2. Stage 2 (09:00 AM): Read saved results from GCS and send to Webex
+   - Retrieve pre-analyzed articles from GCS
+   - Send to Webex without re-analyzing
+"""
+
+import os
+import sys
+import logging
+import argparse
+import json
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Optional
+
+# Add project root to path
+project_root = Path(__file__).parent
+sys.path.insert(0, str(project_root))
+
+from pipeline.news_pipeline import run_pipeline
+from pipeline.webex_sender import WebexSender
+from pipeline.cloud_storage import CloudStorageArchive
+from pipeline.models import WebexMessage
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('pipeline_scheduled.log', encoding='utf-8')
+    ]
 )
+logger = logging.getLogger(__name__)
 
-Write-Host "======================================" -ForegroundColor Cyan
-Write-Host "⏰ Setting up TWO-STAGE Cloud Scheduler" -ForegroundColor Cyan
-Write-Host "  Stage 1: 00:00 - Collect articles" -ForegroundColor Cyan
-Write-Host "  Stage 2: 09:00 - Send to Webex" -ForegroundColor Cyan
-Write-Host "======================================" -ForegroundColor Cyan
-Write-Host ""
+def collect_stage() -> bool:
+    """
+    Stage 1: Collect and analyze articles at midnight (00:00)
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        logger.info("🌙 STAGE 1: MIDNIGHT COLLECTION (00:00)")
+        logger.info("="*60)
+        
+        # Run pipeline
+        logger.info("📊 Running AI news collection pipeline...")
+        webex_messages, analyzed_articles, stats = run_pipeline(
+            max_articles=1000,
+            use_local_cache=False,
+            send_to_webex=False  # Don't send yet
+        )
+        
+        if not webex_messages:
+            logger.warning("⚠️  No messages generated - pipeline may have failed")
+            return False
+        
+        # Save to GCS
+        logger.info("💾 Saving results to Cloud Storage...")
+        archive = CloudStorageArchive("lotte-ai-news-archive")
+        gcs_success = archive.save_daily_results(
+            articles=analyzed_articles,
+            messages=webex_messages,
+            stats={
+                'total_collected': stats.total_collected,
+                'after_first_dedup': stats.after_first_dedup,
+                'after_category_filter': stats.after_category_filter,
+                'after_second_dedup': stats.after_second_dedup,
+                'after_value_validation': stats.after_value_validation,
+                'final_output_count': stats.final_output_count,
+                'regulatory_articles_found': stats.regulatory_articles_found,
+                'duration_seconds': stats.duration_seconds
+            }
+        )
+        
+        # Also save locally as backup
+        logger.info("💾 Saving local backup...")
+        date_str = datetime.now().strftime('%Y%m%d')
+        output_dir = Path('daily_results')
+        output_dir.mkdir(exist_ok=True)
+        output_file = output_dir / f'results_{date_str}.json'
+        
+        result_data = {
+            'date': date_str,
+            'timestamp': datetime.now().isoformat(),
+            'analyzed_articles': [],
+            'webex_messages': [],
+            'stats': {
+                'total_collected': stats.total_collected,
+                'final_output_count': stats.final_output_count,
+                'regulatory_articles_found': stats.regulatory_articles_found
+            }
+        }
+        
+        # Convert analyzed_articles
+        for lotte_context in analyzed_articles:
+            article = lotte_context.article
+            result_data['analyzed_articles'].append({
+                'title': article.title,
+                'url': article.url,
+                'published_date': article.published_date.isoformat() if article.published_date else None,
+                'source': article.source,
+                'lead_paragraph': article.lead_paragraph,
+                'full_content': article.full_content[:500] if article.full_content else '',
+                'lotte_context': {
+                    'impact_type': lotte_context.impact_type,
+                    'impact_areas': lotte_context.impact_areas,
+                    'reasoning': lotte_context.reasoning,
+                    'industry_relevance': lotte_context.industry_relevance,
+                    'industry_category': lotte_context.industry_category
+                }
+            })
+        
+        # Convert webex_messages
+        for msg in webex_messages:
+            result_data['webex_messages'].append({
+                'text': msg.text,
+                'priority': msg.priority
+            })
+        
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(result_data, f, ensure_ascii=False, indent=2)
+        
+        logger.info(f"✅ Pipeline complete: {len(webex_messages)} messages generated")
+        logger.info(f"   📁 GCS: {'✅ Saved' if gcs_success else '❌ Failed'}")
+        logger.info(f"   📁 Local: {output_file}")
+        logger.info(f"   📊 Stats: {stats.total_collected} collected → {stats.final_output_count} final")
+        logger.info(f"   ⚖️  Regulatory: {stats.regulatory_articles_found} articles")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"\n❌ STAGE 1 FAILED: {e}", exc_info=True)
+        return False
 
-# Check if Cloud Run Job exists
-$JobExists = gcloud run jobs describe $ServiceName --region $Region --format "value(metadata.name)" 2>$null
+def send_stage() -> bool:
+    """
+    Stage 2: Send pre-analyzed articles to Webex at 09:00 AM
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        logger.info("☀️  STAGE 2: MORNING TRANSMISSION (09:00)")
+        logger.info("="*60)
+        
+        # Try to load from GCS first
+        logger.info("📥 Loading results from Cloud Storage...")
+        archive = CloudStorageArchive("lotte-ai-news-archive")
+        result_data = archive.load_daily_results()
+        
+        # Fallback to local file if GCS fails
+        if not result_data:
+            logger.warning("⚠️  GCS load failed, trying local backup...")
+            date_str = datetime.now().strftime('%Y%m%d')
+            local_file = Path('daily_results') / f'results_{date_str}.json'
+            
+            if not local_file.exists():
+                logger.error(f"❌ No results file found (neither GCS nor local)")
+                return False
+            
+            with open(local_file, 'r', encoding='utf-8') as f:
+                result_data = json.load(f)
+            logger.info(f"✅ Loaded from local backup: {local_file}")
+        
+        # Reconstruct WebexMessage objects
+        webex_messages = []
+        for msg_data in result_data.get('webex_messages', []):
+            webex_messages.append(WebexMessage(
+                text=msg_data['text'],
+                priority=msg_data.get('priority', 'INFO')
+            ))
+        
+        if not webex_messages:
+            logger.warning("⚠️  No messages to send")
+            return False
+        
+        logger.info(f"📨 Sending {len(webex_messages)} messages to Webex...")
+        
+        # Send to Webex
+        sender = WebexSender(
+            room_id=os.getenv('WEBEX_ROOM_ID'),
+            token=os.getenv('WEBEX_BOT_TOKEN')
+        )
+        
+        # Create stub analyses for industry_relevance check
+        class AnalysisStub:
+            def __init__(self, relevance):
+                self.industry_relevance = relevance
+        
+        analyses = [
+            AnalysisStub(article.get('lotte_context', {}).get('industry_relevance', ''))
+            for article in result_data.get('analyzed_articles', [])
+        ]
+        
+        sender.send_batch(webex_messages, analyses=analyses)
+        
+        stats_data = result_data.get('stats', {})
+        logger.info(f"✅ Transmission complete!")
+        logger.info(f"   📊 Messages sent: {len(webex_messages)}")
+        logger.info(f"   📈 Total collected: {stats_data.get('total_collected', 'N/A')}")
+        logger.info(f"   🎯 Final output: {stats_data.get('final_output_count', 'N/A')}")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"\n❌ STAGE 2 FAILED: {e}", exc_info=True)
+        return False
 
-if (-not $JobExists) {
-    Write-Host "❌ Error: Cloud Run Job not found. Deploy first using .\deploy.ps1" -ForegroundColor Red
-    exit 1
-}
+def main():
+    parser = argparse.ArgumentParser(description='Run AI news pipeline (scheduled)')
+    parser.add_argument(
+        '--stage',
+        choices=['collect', 'send', 'both'],
+        default='both',
+        help='Pipeline stage to run'
+    )
+    args = parser.parse_args()
+    
+    logger.info("="*60)
+    logger.info("🚀 AI NEWS PIPELINE - SCHEDULED EXECUTION")
+    logger.info("="*60)
+    logger.info(f"   Stage: {args.stage.upper()}")
+    logger.info(f"   Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("="*60)
+    
+    success = True
+    
+    if args.stage in ['collect', 'both']:
+        success = collect_stage()
+        if not success:
+            logger.error("❌ Collection stage failed")
+            sys.exit(1)
+    
+    if args.stage in ['send', 'both']:
+        success = send_stage()
+        if not success:
+            logger.error("❌ Send stage failed")
+            sys.exit(1)
+    
+    logger.info("\n" + "="*60)
+    logger.info("✅ PIPELINE EXECUTION COMPLETE")
+    logger.info("="*60)
 
-Write-Host "Cloud Run Job: $ServiceName" -ForegroundColor Cyan
-Write-Host ""
-
-# Create service account (if not exists)
-$ServiceAccount = "cloud-scheduler-invoker@$ProjectId.iam.gserviceaccount.com"
-
-Write-Host "🔐 Setting up service account..." -ForegroundColor Yellow
-gcloud iam service-accounts create cloud-scheduler-invoker `
-    --display-name "Cloud Scheduler Invoker" `
-    --quiet 2>$null
-
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "   ✅ Service account created" -ForegroundColor Green
-} else {
-    Write-Host "   ℹ️  Service account already exists" -ForegroundColor Gray
-}
-
-# Grant permission to invoke Cloud Run Jobs
-Write-Host ""
-Write-Host "🔑 Granting Cloud Run Jobs invoker permission..." -ForegroundColor Yellow
-gcloud run jobs add-iam-policy-binding $ServiceName `
-    --region $Region `
-    --member "serviceAccount:$ServiceAccount" `
-    --role "roles/run.invoker" `
-    --quiet
-
-# Delete existing jobs if exist
-Write-Host ""
-Write-Host "🗑️  Removing old scheduler jobs (if exist)..." -ForegroundColor Yellow
-
-# Delete old single-stage job
-gcloud scheduler jobs delete "ai-news-daily-730am" `
-    --location $Region `
-    --quiet 2>$null
-
-gcloud scheduler jobs delete $CollectJobName `
-    --location $Region `
-    --quiet 2>$null
-
-gcloud scheduler jobs delete $SendJobName `
-    --location $Region `
-    --quiet 2>$null
-
-Write-Host "   ✅ Old jobs cleaned up" -ForegroundColor Green
-
-# Create Cloud Scheduler jobs to trigger Cloud Run Jobs
-Write-Host ""
-Write-Host "📅 Creating scheduler jobs..." -ForegroundColor Yellow
-
-# Cloud Run Jobs URI format
-$JobUri = "https://$Region-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$ProjectId/jobs/$ServiceName`:run"
-
-# Stage 1: Collect at midnight (00:00)
-Write-Host "   🌙 Stage 1: Midnight collection (00:00)..." -ForegroundColor Cyan
-gcloud scheduler jobs create http $CollectJobName `
-    --location $Region `
-    --schedule $CollectSchedule `
-    --time-zone $TimeZone `
-    --uri $JobUri `
-    --http-method POST `
-    --oauth-service-account-email $ServiceAccount `
-    --headers "Content-Type=application/json" `
-    --message-body '{"args":["--stage","collect"]}' `
-    --quiet
-
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "   ✅ Midnight collection job created" -ForegroundColor Green
-} else {
-    Write-Host "   ❌ Failed to create midnight job" -ForegroundColor Red
-}
-
-# Stage 2: Send at 9 AM (09:00)
-Write-Host "   ☀️  Stage 2: Morning send (09:00)..." -ForegroundColor Cyan
-gcloud scheduler jobs create http $SendJobName `
-    --location $Region `
-    --schedule $SendSchedule `
-    --time-zone $TimeZone `
-    --uri $JobUri `
-    --http-method POST `
-    --oauth-service-account-email $ServiceAccount `
-    --headers "Content-Type=application/json" `
-    --message-body '{"args":["--stage","send"]}' `
-    --quiet
-
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "   ✅ Morning send job created" -ForegroundColor Green
-} else {
-    Write-Host "   ❌ Failed to create morning job" -ForegroundColor Red
-}
-
-# Get next run times
-$CollectNextRun = gcloud scheduler jobs describe $CollectJobName --location $Region --format "value(scheduleTime)" 2>$null
-$SendNextRun = gcloud scheduler jobs describe $SendJobName --location $Region --format "value(scheduleTime)" 2>$null
-
-Write-Host ""
-Write-Host "✅ TWO-STAGE Scheduler setup complete!" -ForegroundColor Green
-Write-Host ""
-Write-Host "📋 Schedule Summary:" -ForegroundColor Cyan
-Write-Host "  🌙 Stage 1 (Collect): $CollectJobName" -ForegroundColor White
-Write-Host "     Schedule: Every day at 00:00 (midnight)" -ForegroundColor Gray
-Write-Host "     Next run: $CollectNextRun" -ForegroundColor Gray
-Write-Host ""
-Write-Host "  ☀️  Stage 2 (Send): $SendJobName" -ForegroundColor White
-Write-Host "     Schedule: Every day at 09:00 (9 AM)" -ForegroundColor Gray
-Write-Host "     Next run: $SendNextRun" -ForegroundColor Gray
-Write-Host ""
-Write-Host "To test immediately:" -ForegroundColor Yellow
-Write-Host "  gcloud scheduler jobs run $CollectJobName --location $Region" -ForegroundColor White
-Write-Host "  gcloud scheduler jobs run $SendJobName --location $Region" -ForegroundColor White
-Write-Host ""
-Write-Host "To view logs:" -ForegroundColor Yellow
-Write-Host "  gcloud logs read --limit 50 --format json" -ForegroundColor White
+if __name__ == "__main__":
+    main()

@@ -5,24 +5,17 @@ import os
 import json
 import logging
 from datetime import datetime
-from typing import List
+from typing import List, Dict, Optional, Any
 from google.cloud import storage
 
 from .models import LotteContextAnalysis, WebexMessage
 
 logger = logging.getLogger(__name__)
 
-
 class CloudStorageArchive:
     """Save pipeline results to Google Cloud Storage."""
     
     def __init__(self, bucket_name: str = "lotte-ai-news-archive"):
-        """
-        Initialize Cloud Storage client.
-        
-        Args:
-            bucket_name: GCS bucket name for storing results
-        """
         self.bucket_name = bucket_name
         self.client = None
         self.bucket = None
@@ -35,122 +28,108 @@ class CloudStorageArchive:
             logger.warning(f"⚠️  Cloud Storage initialization failed: {e}")
             logger.warning("   Results will not be archived to GCS")
     
-    def save_results(
+    def save_daily_results(
         self,
         articles: List[LotteContextAnalysis],
         messages: List[WebexMessage],
         stats: dict = None
     ) -> bool:
         """
-        Save pipeline results to Cloud Storage.
-        
-        Args:
-            articles: Analyzed articles with Lotte context
-            messages: Generated Webex messages
-            stats: Pipeline statistics
-            
-        Returns:
-            True if successful, False otherwise
+        [Stage 1: 자정 실행용] 전체 결과를 하나의 JSON 파일로 GCS에 저장합니다.
         """
         if not self.client or not self.bucket:
             logger.debug("Cloud Storage not configured, skipping archive")
             return False
         
         try:
+            date_str = datetime.now().strftime('%Y%m%d')
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            date_prefix = datetime.now().strftime('%Y/%m/%d')
             
-            # Save analyzed articles (JSON)
-            articles_data = []
-            for a in articles:
-                # LotteContextAnalysis 객체 내부에 원본 기사 객체(article)가 있다고 가정
-                # 만약 속성명이 'article'이 아니라면 'original_article' 등으로 변경 필요
-                source_article = getattr(a, 'article', None) or getattr(a, 'original_article', None)
+            result_data = {
+                'date': date_str,
+                'timestamp': timestamp,
+                'analyzed_articles': [],
+                'webex_messages': [],
+                'stats': stats or {}
+            }
+            
+            # Articles 데이터 변환 (안전하게 추출)
+            for context in articles:
+                # 1. 원본 기사 객체 찾기 (article, original_article, 또는 context 자체)
+                article_obj = getattr(context, 'article', None) or getattr(context, 'original_article', None) or context
                 
-                # 안전 장치: 원본 기사 객체를 못 찾으면 분석 객체 자체(a)를 사용 시도
-                target_obj = source_article if source_article else a
-                
-                article_dict = {
-                    # 원본 기사 정보 (nested object에서 추출)
-                    'title': getattr(target_obj, 'title', 'No Title'),
-                    'url': getattr(target_obj, 'url', ''),
-                    'published_date': target_obj.published_date.isoformat() if hasattr(target_obj, 'published_date') and target_obj.published_date else None,
-                    'source': getattr(target_obj, 'source', 'Unknown'),
-                    'content': getattr(target_obj, 'content', '')[:500] + '...' if getattr(target_obj, 'content', '') and len(getattr(target_obj, 'content', '')) > 500 else getattr(target_obj, 'content', ''),
-                    
-                    # AI 분석 결과 정보 (LotteContextAnalysis 객체에서 추출)
-                    'industry_relevance': getattr(a, 'industry_relevance', None),
-                    'value_score': getattr(a, 'value_score', 0),
-                    'impact_areas': getattr(a, 'impact_areas', []),
-                    'use_case_summary': getattr(a, 'use_case_summary', ''),
-                    'competitive_advantage': getattr(a, 'competitive_advantage', ''),
-                    'implementation_difficulty': getattr(a, 'implementation_difficulty', ''),
-                    'potential_partners': getattr(a, 'potential_partners', []),
-                    'lotte_context': getattr(a, 'lotte_context', '')
+                # 2. 데이터 추출 (없으면 기본값)
+                article_data = {
+                    'title': getattr(article_obj, 'title', 'No Title'),
+                    'url': getattr(article_obj, 'url', ''),
+                    'published_date': article_obj.published_date.isoformat() if hasattr(article_obj, 'published_date') and article_obj.published_date else None,
+                    'source': getattr(article_obj, 'source', 'Unknown'),
+                    'full_content': getattr(article_obj, 'content', '')[:1000] if hasattr(article_obj, 'content') else '',
+                    'lotte_context': {
+                        'impact_type': getattr(context, 'impact_type', ''),
+                        'impact_areas': getattr(context, 'impact_areas', []),
+                        'reasoning': getattr(context, 'reasoning', ''),
+                        'industry_relevance': getattr(context, 'industry_relevance', ''),
+                        'industry_category': getattr(context, 'industry_category', '')
+                    }
                 }
-                articles_data.append(article_dict)
+                result_data['analyzed_articles'].append(article_data)
             
-            articles_blob = self.bucket.blob(f"articles/{date_prefix}/articles_{timestamp}.json")
-            articles_blob.upload_from_string(
-                json.dumps(articles_data, ensure_ascii=False, indent=2),
+            # Messages 데이터 변환
+            for msg in messages:
+                result_data['webex_messages'].append({
+                    'text': msg.text,
+                    'priority': getattr(msg, 'priority', 'INFO')
+                })
+            
+            # GCS 저장
+            blob_path = f"daily_results/{date_str}/results_{timestamp}.json"
+            blob = self.bucket.blob(blob_path)
+            blob.upload_from_string(
+                json.dumps(result_data, ensure_ascii=False, indent=2),
                 content_type='application/json'
             )
-            logger.info(f"   📁 Saved {len(articles)} articles to: articles/{date_prefix}/articles_{timestamp}.json")
             
-            # Save Webex messages (TXT)
-            messages_content = "\n\n" + "="*80 + "\n\n".join(
-                [f"Message {i+1}/{len(messages)}:\n{m.text}" for i, m in enumerate(messages)]
-            )
-            
-            messages_blob = self.bucket.blob(f"messages/{date_prefix}/webex_{timestamp}.txt")
-            messages_blob.upload_from_string(
-                messages_content,
-                content_type='text/plain; charset=utf-8'
-            )
-            logger.info(f"   📁 Saved {len(messages)} messages to: messages/{date_prefix}/webex_{timestamp}.txt")
-            
-            # Save statistics (JSON)
-            if stats:
-                stats_blob = self.bucket.blob(f"stats/{date_prefix}/stats_{timestamp}.json")
-                stats_blob.upload_from_string(
-                    json.dumps(stats, ensure_ascii=False, indent=2),
-                    content_type='application/json'
-                )
-                logger.info(f"   📁 Saved statistics to: stats/{date_prefix}/stats_{timestamp}.json")
-            
-            logger.info(f"✅ Cloud Storage archive complete")
+            logger.info(f"✅ Saved to GCS: gs://{self.bucket_name}/{blob_path}")
             return True
             
         except Exception as e:
-            logger.error(f"❌ Failed to save to Cloud Storage: {e}", exc_info=True)
+            logger.error(f"❌ Failed to save to GCS: {e}", exc_info=True)
             return False
-    
-    def list_archives(self, days: int = 7) -> List[str]:
+
+    def load_daily_results(self, date_str: Optional[str] = None) -> Optional[Dict]:
         """
-        List recent archives in Cloud Storage.
-        
-        Args:
-            days: Number of days to look back
-            
-        Returns:
-            List of archive paths
+        [Stage 2: 오전 9시 실행용] 특정 날짜의 가장 최신 결과를 GCS에서 로드합니다.
         """
         if not self.client or not self.bucket:
-            return []
-        
+            logger.error("Cloud Storage not connected")
+            return None
+
         try:
-            blobs = self.client.list_blobs(
-                self.bucket_name,
-                prefix="articles/"
-            )
+            if date_str is None:
+                date_str = datetime.now().strftime('%Y%m%d')
             
-            archives = []
-            for blob in blobs:
-                if blob.name.endswith('.json'):
-                    archives.append(blob.name)
+            prefix = f"daily_results/{date_str}/"
+            logger.info(f"🔍 Searching GCS: gs://{self.bucket_name}/{prefix}")
             
-            return sorted(archives, reverse=True)[:days]
+            blobs = list(self.client.list_blobs(self.bucket_name, prefix=prefix))
+            json_blobs = [b for b in blobs if b.name.endswith('.json')]
+            
+            if not json_blobs:
+                logger.warning(f"⚠️  No result files found for {date_str}")
+                return None
+            
+            # 최신 파일 선택
+            latest_blob = sorted(json_blobs, key=lambda x: x.updated, reverse=True)[0]
+            logger.info(f"📄 Loading: {latest_blob.name}")
+            
+            content = latest_blob.download_as_text()
+            result_data = json.loads(content)
+            
+            count = len(result_data.get('webex_messages', []))
+            logger.info(f"✅ Loaded {count} messages from GCS")
+            return result_data
             
         except Exception as e:
-            logger.error(f"Failed to list archives: {e}")
-            return []
+            logger.error(f"❌ Failed to load from GCS: {e}", exc_info=True)
+            return None
