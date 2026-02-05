@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+*.egg-info/
+
+# Logs
+*.log
+pipeline_scheduled.log
+docker_*.log
+
+# Output files
+webex_messages_*.txt
+collaboration_partners_*.md
+keyword_results/
+daily_results/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Git
+.git/
+.gitignore
+
+# Test files
+test/
+tests/
+__MACOSX/
+
+# Documentation
+desc/
+*.md
+!README.md
+
+# Service accounts
+service_account/
+*.json
+
+# Environment
+.env
+.env.local
+
+# Office templates
+사용자 지정 Office 서식 파일/

@@ -1,0 +1,52 @@
+# Service Account Keys (NEVER commit these!)
+key.json
+service_account/*.json
+*.json.key
+
+# Environment variables
+.env
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Logs
+*.log
+docker_*.log
+docker_*.txt
+*.log.txt
+temp_log.json
+cloud_logs.json
+
+# Results
+keyword_results/
+daily_results/
+collection_result.log
+pipeline.log
+pipeline_scheduled.log
+
+# Mac
+__MACOSX/
+.DS_Store
+
+# Webex messages backups
+webex_messages_*.txt

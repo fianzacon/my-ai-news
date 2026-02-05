@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+*.egg-info/
+
+# Logs
+*.log
+pipeline_scheduled.log
+
+# Output files
+webex_messages_*.txt
+collaboration_partners_*.md
+keyword_results/
+daily_results/
+docker_*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Git
+.git/
+.gitignore
+
+# Test files
+test/
+tests/
+__MACOSX/
+
+# Documentation
+desc/
+*.md
+!README.md
+
+# Service accounts (will use GCP auth)
+service_account/
+*.json
+
+# Environment (will use Cloud Run env vars)
+.env
+.env.local

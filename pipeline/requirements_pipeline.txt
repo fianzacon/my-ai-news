@@ -1,0 +1,19 @@
+# Additional dependencies for the AI News Intelligence Pipeline
+
+# News collection
+requests>=2.31.0
+
+# Content extraction
+newspaper4k>=0.9.3
+# Alternative: newspaper3k>=0.2.8
+
+# Data science and ML
+scikit-learn>=1.3.0
+numpy>=1.24.0
+
+google-cloud-storage  # 추가
+# Already included in main requirements.txt:
+# langchain-google-genai
+# langchain-google-vertexai
+# langchain
+# python-dotenv
