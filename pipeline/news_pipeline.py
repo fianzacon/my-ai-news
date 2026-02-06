@@ -126,6 +126,7 @@ class NewsIntelligencePipeline:
                     self.partnership_db.save_to_markdown(companies, db_filename)
             
             # STEP 8: Cloud Storage Archive
+
             if analyzed_articles and webex_messages:
                 logger.info("\n" + "=" * 60)
                 logger.info("STEP 8: CLOUD STORAGE ARCHIVE")
@@ -143,7 +144,8 @@ class NewsIntelligencePipeline:
                     'regulatory_articles_retained': self.stats.regulatory_articles_retained
                 }
                 
-                self.cloud_storage.save_results(
+                # save_results → save_daily_results로 변경
+                self.cloud_storage.save_daily_results(
                     articles=analyzed_articles,
                     messages=webex_messages,
                     stats=stats_dict
@@ -154,15 +156,16 @@ class NewsIntelligencePipeline:
             
             return webex_messages, analyzed_articles, self.stats
             
+
         except KeyboardInterrupt:
             logger.info("\n⚠️  Pipeline interrupted by user")
             self.stats.end_time = datetime.now()
-            return [], [], self.stats
+            raise  # 즉시 중단
             
         except Exception as e:
             logger.error(f"\n❌ Pipeline failed with error: {e}", exc_info=True)
             self.stats.end_time = datetime.now()
-            return [], [], self.stats
+            raise  # 에러를 다시 throw해서 컨테이너 즉시 종료
         
         finally:
             # Always print summary
