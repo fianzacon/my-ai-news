@@ -48,9 +48,23 @@ jobs:
 
       - name: Deploy to Cloud Run Jobs
         run: |
-          gcloud run jobs update ${{ env.SERVICE_NAME }} \
-            --image ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
-            --region ${{ env.REGION }}
+          # Job 존재 여부 확인
+          if gcloud run jobs describe ${{ env.SERVICE_NAME }} --region ${{ env.REGION }} &>/dev/null; then
+            echo "✅ Job exists, updating..."
+            gcloud run jobs update ${{ env.SERVICE_NAME }} \
+              --image ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+              --region ${{ env.REGION }}
+          else
+            echo "🆕 Job does not exist, creating..."
+            gcloud run jobs create ${{ env.SERVICE_NAME }} \
+              --image ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+              --region ${{ env.REGION }} \
+              --memory 2Gi \
+              --cpu 2 \
+              --max-retries 1 \
+              --task-timeout 2h \
+              --set-env-vars "GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }},GOOGLE_NEWS_API_KEY=${{ secrets.GOOGLE_NEWS_API_KEY }},NAVER_CLIENT_ID=${{ secrets.NAVER_CLIENT_ID }},NAVER_CLIENT_SECRET=${{ secrets.NAVER_CLIENT_SECRET }},WEBEX_BOT_TOKEN=${{ secrets.WEBEX_BOT_TOKEN }},WEBEX_ROOM_ID=${{ secrets.WEBEX_ROOM_ID }}"
+          fi
 
       - name: Verify deployment
         run: |
