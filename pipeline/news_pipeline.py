@@ -203,5 +203,43 @@ def main():
         return None
 
 
+
+def run_pipeline(max_articles: int = 1000, use_local_cache: bool = False, send_to_webex: bool = True):
+    """
+    Wrapper function for scheduled execution.
+    
+    Args:
+        max_articles: Maximum number of articles to collect (현재 사용 안 함)
+        use_local_cache: Use local cache (현재 사용 안 함)
+        send_to_webex: Send to Webex (현재 save_output으로 처리됨)
+    
+    Returns:
+        Tuple of (webex_messages, analyzed_articles, stats)
+    """
+    # Setup logging
+    setup_logging()
+    
+    logger.info("Initializing AI News Intelligence Pipeline for Lotte Members")
+    logger.info(f"Configuration: {PipelineConfig.LLM_MODEL}")
+    
+    # Validate configuration
+    PipelineConfig.validate()
+    
+    # Run pipeline
+    pipeline = NewsIntelligencePipeline()
+    webex_messages, analyzed_articles, stats = pipeline.run(save_output=True)
+    
+    # Warnings
+    if stats.regulatory_articles_found > stats.regulatory_articles_retained:
+        logger.warning(f"\n⚠️  WARNING: Some regulatory articles may have been dropped!")
+    
+    if stats.final_output_count == 0:
+        logger.warning("\n⚠️  WARNING: Pipeline produced no output messages!")
+    else:
+        logger.info(f"\n✅ Pipeline completed successfully with {stats.final_output_count} messages")
+    
+    return webex_messages, analyzed_articles, stats
+
+
 if __name__ == "__main__":
     main()
