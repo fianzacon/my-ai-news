@@ -46,8 +46,7 @@ def generate_embedding(text: str) -> List[float]:
 
         result = genai.embed_content(
             model=model_name,
-            content=text,
-            task_type="retrieval_document"
+            content=text
         )
         return result['embedding']
     except Exception as e:
@@ -86,8 +85,7 @@ def generate_embeddings_batch(texts: List[str], batch_size: int = 10) -> Optiona
                 try:
                     result = genai.embed_content(
                         model=model_name,
-                        content=text,
-                        task_type="retrieval_document"
+                        content=text
                     )
                     batch_embeddings.append(result['embedding'])
                 except Exception as inner_e:
