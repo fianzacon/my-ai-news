@@ -66,7 +66,7 @@ class PipelineConfig:
     LLM_REQUESTS_PER_MINUTE = int(os.getenv("LLM_REQUESTS_PER_MINUTE", 60))
     
     # Embedding Configuration
-    EMBEDDING_MODEL = "text-multilingual-embedding-002"  # VertexAI for production
+    EMBEDDING_MODEL = "models/text-embedding-004"  
     EMBEDDING_DIMENSION = 768
     
     # Deduplication Thresholds

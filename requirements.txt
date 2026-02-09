@@ -18,3 +18,4 @@ beautifulsoup4
 requests
 lxml
 google-cloud-storage
+google-generativeai>=0.7.2

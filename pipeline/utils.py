@@ -26,7 +26,7 @@ def get_embedding_model():
             raise ValueError("GOOGLE_API_KEY environment variable not set")
         
         _embedding_model = GoogleGenerativeAIEmbeddings(
-            model="models/text-embedding-004",
+            model=PipelineConfig.EMBEDDING_MODEL,
             google_api_key=google_api_key
         )
     return _embedding_model
